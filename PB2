@@ -1,0 +1,225 @@
+clc;
+
+clear;
+
+%% Parameters
+numNodes = 100; % Number of nodes
+fieldDim = [100, 100]; % Field dimensions (100x100 sqm)
+packetSize = 4000; % Packet size in bits
+numRounds = 4000; % Number of simulation rounds
+numAnts = 50; % Number of ants in ACO
+numIterations = 100; % Number of iterations for ACO
+
+% Ant Colony Optimization Parameters
+alpha = 1; % Pheromone importance
+beta = 2; % Heuristic importance
+evaporationRate = 0.5; % Pheromone evaporation rate
+initialPheromone = 1; % Initial pheromone level
+
+% Energy model parameters
+Eelec = 50e-9; % Energy to run the radio (J/bit)
+Eamp = 100e-12; % Energy for amplification (J/bit/m^2)
+initialEnergy = 0.5; % Initial energy for each node (J)
+
+% Sink node position
+sink = [10, 100]; % Sink placed at [50, 100]
+
+%% Generate random positions for nodes
+nodes = rand(numNodes, 2) .* repmat(fieldDim, numNodes, 1);
+
+% Initialize energy for each node
+nodeEnergy = initialEnergy * ones(numNodes, 1);
+
+%% Plot node deployment
+figure;
+scatter(nodes(:,1), nodes(:,2), 'ro'); hold on;
+scatter(sink(1), sink(2), 100, 'bs', 'filled'); % Sink in blue square
+title('WSN Node Deployment');
+xlabel('X (m)');
+ylabel('Y (m)');
+grid on;
+
+%% ACO for Optimized Cluster Head Selection and Shortest Path Routing
+
+% Distance matrix between nodes
+distance = zeros(numNodes, numNodes);
+for i = 1:numNodes
+    for j = i+1:numNodes
+        distance(i,j) = sqrt((nodes(i,1) - nodes(j,1))^2 + (nodes(i,2) - nodes(j,2))^2);
+        distance(j,i) = distance(i,j); % Symmetric distance matrix
+    end
+end
+
+% Distance to the sink
+distanceToSink = sqrt((nodes(:,1) - sink(1)).^2 + (nodes(:,2) - sink(2)).^2);
+
+% Initialize pheromone matrix
+pheromone = initialPheromone * ones(numNodes, numNodes);
+
+% Initialize variables to store the best CHs and paths found by ACO
+bestCHs = [];
+bestPaths = zeros(numNodes, numNodes);
+
+%% Run ACO for Optimized CH Selection and Path Discovery
+for iter = 1:numIterations
+    antPaths = zeros(numAnts, numNodes); % Store the path for each ant
+    antCHs = zeros(numAnts, numNodes);   % Store selected CHs for each ant
+
+    for ant = 1:numAnts
+        % Randomly choose a starting node
+        currentNode = randi([1 numNodes]);
+        visited = false(1, numNodes); % Track visited nodes
+        visited(currentNode) = true;
+        path = currentNode;
+
+        for step = 2:numNodes
+            % Calculate transition probabilities based on pheromone and distance
+            pheromoneVisible = pheromone(currentNode, :) .^ alpha;
+            heuristic = (1 ./ distance(currentNode, :)) .^ beta;
+
+            % Ensure valid heuristics (handling divide-by-zero)
+            heuristic(~isfinite(heuristic)) = 0;
+
+            % Calculate probabilities for moving to the next node
+            probabilities = pheromoneVisible .* heuristic .* (~visited);
+            if sum(probabilities) == 0
+                unvisitedNodes = find(~visited);
+                nextNode = unvisitedNodes(randi(length(unvisitedNodes)));
+            else
+                probabilities = probabilities / sum(probabilities);
+                nextNode = randsample(1:numNodes, 1, true, probabilities);
+            end
+
+            % Update path and visited nodes
+            path = [path, nextNode];
+            visited(nextNode) = true;
+            currentNode = nextNode;
+        end
+
+        antPaths(ant, :) = path;
+
+        % Randomly select cluster heads for this ant based on distance heuristic
+        % Fix: Store only the selected CHs in a cell array instead of forcing a matrix
+          antCHs = cell(numAnts, 1);  % Use a cell array to store the CHs for each ant
+
+             for ant = 1:numAnts
+                % Randomly select approximately numNodes/10 cluster heads for this ant
+                  selectedCHs = randsample(1:numNodes, round(numNodes/10));
+    
+                % Store the selected cluster heads in the cell array
+                  antCHs{ant} = selectedCHs;
+             end
+    end
+
+    % Update pheromones based on paths found by ants
+    pheromone = (1 - evaporationRate) * pheromone;
+    for ant = 1:numAnts
+        path = antPaths(ant, :);
+        for step = 1:(numNodes-1)
+            i = max(1, min(numNodes, path(step)));
+            j = max(1, min(numNodes, path(step+1)));
+            dist = distance(i, j);
+            if dist == 0
+                dist = eps;
+            end
+            pheromone(i, j) = pheromone(i, j) + 1 / dist;
+        end
+    end
+
+    % Store the best paths and CHs found by ants
+    bestPaths = antPaths(1, :);
+    bestCHs = antCHs(1, :);
+end
+
+%% Shortest Path Calculation from Nodes to CHs and Sink
+CHtoSinkDistance = zeros(length(bestCHs), 1);
+memberCHDistances = zeros(numNodes, 1);
+
+for i = 1:numNodes
+    % Find nearest cluster head% Check if bestCHs is not empty before calculating the nearest CH
+    % Ensure bestCHs is not empty and currentNodePos is defined properly
+    if ~isempty(bestCHs)
+    % Get the position of node i
+    currentNodePos = nodes(i, :);  % currentNodePos should be 1x2 (x, y) coordinates
+    
+    % Ensure currentNodePos is a 1x2 vector and nodes(bestCHs,:) is Nx2
+    if size(currentNodePos, 2) == 2 && size(nodes(bestCHs,:), 2) == 2
+        % Calculate the Euclidean distance from node i to all cluster heads (CHs)
+        distancesToCHs = sqrt(sum((nodes(bestCHs,:) - currentNodePos).^2, 2));
+        
+        % Find the nearest cluster head (CH)
+        [~, nearestCH] = min(distancesToCHs);
+    else
+        error('Dimensionality mismatch: Make sure nodes and positions have correct dimensions.');
+    end
+    else
+    error('bestCHs is empty. Cluster heads are not selected correctly.');
+    end
+    memberCHDistances(i) = sqrt(sum((nodes(bestCHs(nearestCH),:) - nodes(i,:)).^2));
+ end
+
+% Calculate distance from CHs to sink
+for i = 1:length(bestCHs)
+    CHtoSinkDistance(i) = sqrt((nodes(bestCHs(i),1) - sink(1))^2 + (nodes(bestCHs(i),2) - sink(2))^2);
+end
+
+% Plot shortest paths between nodes and CHs
+for i = 1:numNodes
+    [~, nearestCH] = min(sqrt(sum((nodes(bestCHs,:) - nodes(i,:)).^2, 2)));
+    plot([nodes(i,1), nodes(bestCHs(nearestCH),1)], [nodes(i,2), nodes(bestCHs(nearestCH),2)], 'g--');
+end
+
+% Plot shortest paths between CHs and sink
+for i = 1:length(bestCHs)
+    plot([nodes(bestCHs(i),1), sink(1)], [nodes(bestCHs(i),2), sink(2)], 'b-');
+end
+
+%% Energy Consumption Calculation
+energyConsumption = zeros(numNodes, 1);
+for i = 1:numNodes
+    d = memberCHDistances(i); % Distance from node to CH
+    energyConsumption(i) = (Eelec + Eamp * d^2) * packetSize;
+end
+
+%% Simulation over Multiple Rounds
+aliveNodes = zeros(numRounds, 1);
+throughput = zeros(numRounds, 1);
+delay = zeros(numRounds, 1);
+
+for round = 1:numRounds
+    % Update node energy
+    nodeEnergy = nodeEnergy - energyConsumption;
+    aliveNodes(round) = sum(nodeEnergy > 0);
+
+    % Throughput (alive nodes * packet size)
+    throughput(round) = aliveNodes(round) * packetSize;
+
+    % Delay (average distance to CHs)
+    delay(round) = mean(memberCHDistances) / 1e6; % Delay in milliseconds
+end
+
+%% Plot Results
+
+% Plot No. of Rounds vs No. of Alive Nodes
+figure;
+plot(1:numRounds, aliveNodes, '-');
+title('No. of Rounds vs Alive Nodes');
+xlabel('Rounds');
+ylabel('Alive Nodes');
+grid on;
+
+% Plot No. of Rounds vs Throughput
+figure;
+plot(1:numRounds, throughput, '-');
+title('No. of Rounds vs Throughput (bps)');
+xlabel('Rounds');
+ylabel('Throughput (bps)');
+grid on;
+
+% Plot No. of Rounds vs Delay
+figure;
+plot(1:numRounds, delay, '-.');
+title('No. of Rounds vs Delay (ms)');
+xlabel('Rounds');
+ylabel('Delay (ms)');
+grid on;
